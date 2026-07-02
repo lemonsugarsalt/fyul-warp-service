@@ -1,12 +1,20 @@
 import base64
 import io
 import os
+import urllib.request
 
 import numpy as np
 from flask import Flask, jsonify, request
 from PIL import Image, ImageDraw
 
 app = Flask(__name__)
+
+def fetch_image(url):
+    """Fetch image from URL and return as PIL Image."""
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        data = response.read()
+    return Image.open(io.BytesIO(data))
 
 def perspective_coeffs(src_quad, dst_quad):
     matrix = []
@@ -54,19 +62,21 @@ def health():
 @app.route("/warp", methods=["POST"])
 def warp():
     data = request.get_json(force=True)
-    required = ["blank_b64", "design_b64", "quad", "blend_mode", "opacity"]
+    required = ["blank_url", "design_url", "quad", "blend_mode", "opacity"]
     for field in required:
         if field not in data:
             return jsonify({"error": f"Missing field: {field}"}), 400
     try:
-        blank_bytes = base64.b64decode(data["blank_b64"])
-        design_bytes = base64.b64decode(data["design_b64"])
+        # Fetch both images from URLs directly — no base64 needed
+        base = fetch_image(data["blank_url"]).convert("RGBA")
+        design = fetch_image(data["design_url"]).convert("RGBA")
+
         quad = [tuple(pt) for pt in data["quad"]]
         blend_mode = data["blend_mode"]
         opacity = float(data["opacity"])
-        base = Image.open(io.BytesIO(blank_bytes)).convert("RGBA")
-        design = Image.open(io.BytesIO(design_bytes)).convert("RGBA")
+
         warped = warp_design(design, base.size, quad)
+
         if blend_mode == "direct":
             result = base.copy()
             result.alpha_composite(warped)
@@ -83,11 +93,16 @@ def warp():
             result.alpha_composite(lit_img)
         else:
             return jsonify({"error": f"Unknown blend_mode: {blend_mode}"}), 400
+
         out = io.BytesIO()
         result.convert("RGB").save(out, format="PNG")
         out.seek(0)
         result_b64 = base64.b64encode(out.read()).decode("utf-8")
-        return jsonify({"composited_b64": result_b64, "width": result.width, "height": result.height})
+        return jsonify({
+            "composited_b64": result_b64,
+            "width": result.width,
+            "height": result.height
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
